@@ -384,6 +384,10 @@ func profileAddHandler(w *Web) {
 
 	name := strings.TrimSpace(w.r.FormValue("name"))
 	platform := strings.TrimSpace(w.r.FormValue("platform"))
+	extraallowedips := strings.TrimSpace(w.r.FormValue("extraallowedips"))
+	subnet := strings.TrimSpace(w.r.FormValue("subnet"))
+	devicelistenport := strings.TrimSpace(w.r.FormValue("devicelistenport"))
+	endpoint := strings.TrimSpace(w.r.FormValue("endpoint"))
 	admin := w.r.FormValue("admin") == "yes"
 
 	if platform == "" {
@@ -407,7 +411,7 @@ func profileAddHandler(w *Web) {
 		return
 	}
 
-	profile, err := config.AddProfile(userID, name, platform)
+	profile, err := config.AddProfile(userID, name, platform, extraallowedips, subnet, devicelistenport, endpoint)
 	if err != nil {
 		logger.Warn(err)
 		w.Redirect("/?error=addprofile")
@@ -468,12 +472,15 @@ cd {{$.Datadir}}/wireguard
 wg_private_key="$(wg genkey)"
 wg_public_key="$(echo $wg_private_key | wg pubkey)"
 
-wg set wg0 peer ${wg_public_key} allowed-ips {{if .Ipv4Enabled}}{{$.IPv4Pref}}{{$.Profile.Number}}/32{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Pref}}{{$.Profile.Number}}/128{{end}}
+wg set wg0 peer ${wg_public_key} allowed-ips {{if .Ipv4Enabled}}{{$.IPv4Pref}}{{$.Profile.Number}}/32{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Pref}}{{$.Profile.Number}}/128{{end}}{{if ne .Subnet "" }},{{$.Subnet}}{{end}}{{if ne $.DeviceEndPoint "" }} endpoint {{$.DeviceEndPoint}}:{{$.DeviceListenPort}}{{end}}
 
 cat <<WGPEER >peers/{{$.Profile.ID}}.conf
 [Peer]
 PublicKey = ${wg_public_key}
-AllowedIPs = {{if .Ipv4Enabled}}{{$.IPv4Pref}}{{$.Profile.Number}}/32{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Pref}}{{$.Profile.Number}}/128{{end}}
+{{- if ne $.DeviceListenPort "" }}
+Endpoint = {{$.DeviceEndPoint}}:{{$.DeviceListenPort}}
+{{- end }}
+AllowedIPs = {{if .Ipv4Enabled}}{{$.IPv4Pref}}{{$.Profile.Number}}/32{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Pref}}{{$.Profile.Number}}/128{{end}}{{- if ne $.Subnet "" }},{{$.Subnet}}{{end}}
 WGPEER
 
 cat <<WGCLIENT >clients/{{$.Profile.ID}}.conf
@@ -482,30 +489,61 @@ PrivateKey = ${wg_private_key}
 {{- if not .DisableDNS }}
 DNS = {{if .Ipv4Enabled}}{{$.IPv4Gw}}{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Gw}}{{end}}
 {{- end }}
+{{- if ne $.DeviceListenPort "" }}
+ListenPort = {{ $.DeviceListenPort }}
+{{- end }}
+{{- if ne $.Subnet "" }}
+PostUp   = iptables -A FORWARD -s {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -j ACCEPT; iptables -A FORWARD -d {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -j ACCEPT; iptables -t nat -A POSTROUTING -s {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -d {{$.Subnet}} -j MASQUERADE
+PostDown = iptables -D FORWARD -s {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -j ACCEPT; iptables -D FORWARD -d {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -j ACCEPT; iptables -t nat -D POSTROUTING -s {{$.IPv4Pref}}0/{{$.IPv4Cidr}} -d {{$.Subnet}} -j MASQUERADE
+{{- end }}
 Address = {{if .Ipv4Enabled}}{{$.IPv4Pref}}{{$.Profile.Number}}/{{$.IPv4Cidr}}{{end}}{{if .Ipv6Enabled}}{{if .Ipv4Enabled}},{{end}}{{$.IPv6Pref}}{{$.Profile.Number}}/{{$.IPv6Cidr}}{{end}}
 
 [Peer]
 PublicKey = $(cat server.public)
 
 Endpoint = {{$.EndpointHost}}:{{$.Listenport}}
-AllowedIPs = {{$.AllowedIPS}}
+AllowedIPs = {{$.IPv4Gw}}/{{$.IPv4Cidr}},{{$.AllowedIPS}}{{if $.ExtraAllowedIPS}},{{$.ExtraAllowedIPS}}{{end}}
 WGCLIENT
+
+cat <<RMIPTABLES >iptables-cleanup/{{$.Profile.ID}}.sh
+{{- if ne $.Subnet "" }}
+/sbin/route delete -net {{$.Subnet}} dev wg0 || echo "not exists"
+{{- end }}
+/sbin/iptables -t nat -L |grep {{$.IPv4Pref}}{{$.Profile.Number}} | awk '{system("/sbin/iptables -t nat -D POSTROUTING -s "\$4" -d "\$5" -j MASQUERADE")}'
+RMIPTABLES
+
+cat <<IPTABLES >iptables/{{$.Profile.ID}}.sh
+{{- if ne $.Subnet "" }}
+/sbin/route add -net {{$.Subnet}} dev wg0
+{{- end }}
+IFS=',' read -ra ExtraAllowedIPS <<< "{{$.ExtraAllowedIPS}}"
+for ExtraAllowedIP in "\${ExtraAllowedIPS[@]}"; do
+  /sbin/iptables -t nat -A POSTROUTING -s {{$.IPv4Pref}}{{$.Profile.Number}}/32 -d \${ExtraAllowedIP} -j MASQUERADE
+done
+IPTABLES
+
+bash -x iptables-cleanup/{{$.Profile.ID}}.sh
+bash -x iptables/{{$.Profile.ID}}.sh
 `
 	_, err = bash(script, struct {
-		Profile      Profile
-		EndpointHost string
-		Datadir      string
-		IPv4Gw       string
-		IPv6Gw       string
-		IPv4Pref     string
-		IPv6Pref     string
-		IPv4Cidr     string
-		IPv6Cidr     string
-		Listenport   string
-		AllowedIPS   string
-		Ipv4Enabled  bool
-		Ipv6Enabled  bool
-		DisableDNS   bool
+		Profile          Profile
+		EndpointHost     string
+		Datadir          string
+		IPv4Gw           string
+		IPv6Gw           string
+		IPv4Pref         string
+		IPv6Pref         string
+		IPv4Cidr         string
+		IPv6Cidr         string
+		Listenport       string
+		AllowedIPS       string
+		ExtraAllowedIPS  string
+		Subnet           string
+		DeviceListenPort string
+		DeviceEndPoint   string
+		Ipv4Enabled      bool
+		Ipv6Enabled      bool
+		DisableDNS       bool
 	}{
 		profile,
 		endpointHost,
@@ -518,6 +556,10 @@ WGCLIENT
 		ipv6Cidr,
 		listenport,
 		allowedips,
+		extraallowedips,
+		subnet,
+		devicelistenport,
+		endpoint,
 		ipv4Enabled,
 		ipv6Enabled,
 		disableDNS,
@@ -526,6 +568,7 @@ WGCLIENT
 		logger.Warn(err)
 		f, _ := os.Create("/tmp/error.txt")
 		errstr := fmt.Sprintln(err)
+		f.WriteString(script)
 		f.WriteString(errstr)
 		w.Redirect("/?error=addprofile")
 		return
@@ -573,7 +616,7 @@ func profileDeleteHandler(w *Web) {
 		w.Redirect("/profile/delete?error=deleteprofile")
 		return
 	}
-	if w.Admin {
+	if profile.UserID != "" {
 		w.Redirect("/user/edit/%s?success=deleteprofile", profile.UserID)
 		return
 	}
@@ -690,6 +733,9 @@ peerid=$(cat peers/{{$.Profile.ID}}.conf | awk '/PublicKey/ { printf("%s", $3) }
 wg set wg0 peer $peerid remove
 rm peers/{{$.Profile.ID}}.conf
 rm clients/{{$.Profile.ID}}.conf
+rm iptables/{{$.Profile.ID}}.sh
+bash -x iptables-cleanup/{{$.Profile.ID}}.sh
+rm iptables-cleanup/{{$.Profile.ID}}.sh
 `
 	output, err := bash(script, struct {
 		Datadir string

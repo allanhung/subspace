@@ -1,0 +1,14 @@
+FROM centos:7
+
+RUN yum install -y iproute https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+RUN curl -o /etc/yum.repos.d/jdoss-wireguard-epel-7.repo https://copr.fedorainfracloud.org/coprs/jdoss/wireguard/repo/epel-7/jdoss-wireguard-epel-7.repo
+RUN curl -s https://packagecloud.io/install/repositories/imeyer/runit/script.rpm.sh | bash
+RUN yum install -y wireguard-dkms wireguard-tools runit
+# patch for centos 7.7
+#RUN echo "#define ipv6_dst_lookup_flow(a, b, c, d) ipv6_dst_lookup(a, b, &dst, c) + (void *)0 ?: dst" >> /usr/src/wireguard-$(dkms status |grep wireguard | awk -F':' '{print $1}' | awk -F'/' '{print $2}')/compat/compat.h
+
+COPY wireguard.sh /usr/local/bin/wireguard.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh" ]
+
+CMD [ "tail", "-f", "/dev/null" ]

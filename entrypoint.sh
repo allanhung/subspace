@@ -15,7 +15,7 @@ if [ -z "${SUBSPACE_BACKLINK-}" ]; then
 fi
 
 if [ -z "${SUBSPACE_IPV4_POOL-}" ]; then
-  export SUBSPACE_IPV4_POOL="10.99.97.0/24"
+  export SUBSPACE_IPV4_POOL="10.99.97.0/23"
 fi
 if [ -z "${SUBSPACE_IPV6_POOL-}" ]; then
   export SUBSPACE_IPV6_POOL="fd00::10:97:0/112"
@@ -87,13 +87,33 @@ echo "" >/etc/resolv.conf
 # Set DNS servers
 echo ${SUBSPACE_NAMESERVERS} | tr "," "\n" | while read -r ns; do echo "nameserver ${ns}" >>/etc/resolv.conf; done
 
+if ! test -d /data/wireguard/iptables; then
+  mkdir -p /data/wireguard/iptables
+  touch iptables/null.sh # So you can cat *.sh safely
+fi
+if ! test -d /data/wireguard/iptables-cleanup; then
+  mkdir -p /data/wireguard/iptables-cleanup
+  touch iptables-cleanup/null.sh # So you can cat *.sh safely
+fi
+
 if [ -z "${SUBSPACE_DISABLE_MASQUERADE-}" ]; then
   if [[ ${SUBSPACE_IPV4_NAT_ENABLED} -ne 0 ]]; then
     # IPv4
-    if ! /sbin/iptables -t nat --check POSTROUTING -s ${SUBSPACE_IPV4_POOL} -j MASQUERADE; then
-      /sbin/iptables -t nat --append POSTROUTING -s ${SUBSPACE_IPV4_POOL} -j MASQUERADE
+    if ! /sbin/iptables -t nat --check POSTROUTING -s ${SUBSPACE_IPV4_POOL} -d ${SUBSPACE_ALLOWED_IPS} -j MASQUERADE; then
+      /sbin/iptables -t nat --append POSTROUTING -s ${SUBSPACE_IPV4_POOL} -d ${SUBSPACE_ALLOWED_IPS} -j MASQUERADE
     fi
-
+    if test -d /data/wireguard/iptables-cleanup; then
+      for file in /data/wireguard/iptables-cleanup/*sh
+      do
+        bash -x $file 
+      done
+    fi
+    if test -d /data/wireguard/iptables; then
+      for file in /data/wireguard/iptables/*sh
+      do
+        bash -x $file 
+      done
+    fi
     if ! /sbin/iptables --check FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; then
       /sbin/iptables --append FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
     fi
@@ -140,13 +160,23 @@ if [[ ${SUBSPACE_IPV6_NAT_ENABLED} -ne 0 ]]; then
     /sbin/ip6tables --wait -t nat --append OUTPUT -s ${SUBSPACE_IPV6_POOL} -p tcp --dport 53 -j DNAT --to ${SUBSPACE_IPV6_GW}
   fi
 fi
+
+#
+# WireGuard (Load module)
+#
+rm -rf /usr/src/kernels/*
+ln -sf /host/usr/src/kernels/$(uname -r) /usr/src/kernels/
+WG_VERSION=$(dkms status |grep wireguard | awk -F':' '{print $1}' | awk -F'/' '{print $2}' | awk -F',' '{print $1}')
+dkms build -m wireguard -v ${WG_VERSION}
+dkms install -m wireguard -v ${WG_VERSION}
+
 #
 # WireGuard (${SUBSPACE_IPV4_POOL})
 #
 umask_val=$(umask)
 umask 0077
 if ! test -d /data/wireguard; then
-  mkdir /data/wireguard
+  mkdir -p /data/wireguard
   cd /data/wireguard
 
   mkdir clients
@@ -227,7 +257,7 @@ fi
 
 # subspace service
 if ! test -d /etc/service/subspace; then
-  mkdir /etc/service/subspace
+  mkdir -p /etc/service/subspace
   cat <<RUNIT >/etc/service/subspace/run
 #!/bin/sh
 source /etc/envvars
