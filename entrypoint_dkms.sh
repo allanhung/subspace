@@ -82,19 +82,23 @@ if [ "$SUBSPACE_IPV6_NAT_ENABLED" == "0" ] && [ "$SUBSPACE_IPV4_NAT_ENABLED" == 
   exit 1
 fi
 
+umask_val=$(umask)
+umask 0077
+mkdir -p /data/wireguard
+mkdir -p /data/wireguard/clients
+mkdir -p /data/wireguard/peers
+mkdir -p /data/wireguard/iptables
+mkdir -p /data/wireguard/iptables-cleanup
+
+touch /data/wireguard/clients/null.conf # So you can cat *.conf safely
+touch /data/wireguard/peers/null.conf # So you can cat *.conf safely
+touch /data/wireguard/iptables/null.sh # So you can cat *.sh safely
+touch /data/wireguard/iptables-cleanup/null.sh # So you can cat *.sh safely
+
 # Empty out inherited nameservers
 echo "" >/etc/resolv.conf
 # Set DNS servers
 echo ${SUBSPACE_NAMESERVERS} | tr "," "\n" | while read -r ns; do echo "nameserver ${ns}" >>/etc/resolv.conf; done
-
-if ! test -d /data/wireguard/iptables; then
-  mkdir -p /data/wireguard/iptables
-  touch iptables/null.sh # So you can cat *.sh safely
-fi
-if ! test -d /data/wireguard/iptables-cleanup; then
-  mkdir -p /data/wireguard/iptables-cleanup
-  touch iptables-cleanup/null.sh # So you can cat *.sh safely
-fi
 
 if [ -z "${SUBSPACE_DISABLE_MASQUERADE-}" ]; then
   if [[ ${SUBSPACE_IPV4_NAT_ENABLED} -ne 0 ]]; then
@@ -164,6 +168,11 @@ fi
 #
 # WireGuard (Load module)
 #
+if ! test -f /data/wireguard/server.private; then
+  # Generate public/private server keys.
+  wg genkey | tee /data/wireguard/server.private | wg pubkey > /data/wireguard/server.public
+fi
+
 rm -rf /usr/src/kernels/*
 ln -sf /host/usr/src/kernels/$(uname -r) /usr/src/kernels/
 WG_VERSION=$(dkms status |grep wireguard | awk -F':' '{print $1}' | awk -F'/' '{print $2}' | awk -F',' '{print $1}')
@@ -173,20 +182,6 @@ dkms install -m wireguard -v ${WG_VERSION}
 #
 # WireGuard (${SUBSPACE_IPV4_POOL})
 #
-umask_val=$(umask)
-umask 0077
-if ! test -d /data/wireguard; then
-  mkdir -p /data/wireguard
-  cd /data/wireguard
-
-  mkdir clients
-  touch clients/null.conf # So you can cat *.conf safely
-  mkdir peers
-  touch peers/null.conf # So you can cat *.conf safely
-
-  # Generate public/private server keys.
-  wg genkey | tee server.private | wg pubkey >server.public
-fi
 
 cat <<WGSERVER >/data/wireguard/server.conf
 [Interface]

@@ -29,7 +29,7 @@ RUN yum install -y wireguard-dkms wireguard-tools runit dnsmasq socat
 #RUN echo "#define ipv6_dst_lookup_flow(a, b, c, d) ipv6_dst_lookup(a, b, &dst, c) + (void *)0 ?: dst" >> /usr/src/wireguard-$(dkms status |grep wireguard | awk -F':' '{print $1}' | awk -F'/' '{print $2}')/compat/compat.h
 
 COPY --from=build  /src/subspace /usr/bin/subspace
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY entrypoint_dkms.sh /usr/local/bin/entrypoint.sh
 COPY bin/my_init /sbin/my_init
 
 ENV DEBIAN_FRONTEND noninteractive
