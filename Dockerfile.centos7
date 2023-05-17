@@ -1,0 +1,38 @@
+FROM golang:1.16-alpine as build
+
+RUN apk add --no-cache \
+    git \
+    make
+
+WORKDIR /src
+
+COPY Makefile ./
+# go.mod and go.sum if exists
+COPY go.* ./
+COPY cmd/ ./cmd
+COPY web ./web
+
+ARG BUILD_VERSION=unknown
+
+ENV GODEBUG="netdns=go http2server=0"
+
+RUN make build BUILD_VERSION=${BUILD_VERSION}
+
+FROM centos:7
+LABEL maintainer="github.com/subspacecommunity/subspace"
+
+RUN yum install -y iproute https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+RUN curl -s https://packagecloud.io/install/repositories/imeyer/runit/script.rpm.sh | bash
+RUN yum install -y wireguard-tools runit dnsmasq socat
+
+COPY --from=build  /src/subspace /usr/bin/subspace
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY bin/my_init /sbin/my_init
+
+ENV DEBIAN_FRONTEND noninteractive
+
+RUN chmod +x /usr/bin/subspace /usr/local/bin/entrypoint.sh /sbin/my_init
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh" ]
+
+CMD [ "/sbin/my_init" ]
